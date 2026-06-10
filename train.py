@@ -219,7 +219,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--subtb_lambda", type=float, default=2.0)
     parser.add_argument("--subtb_chunk_size", type=int, default=4)
-    parser.add_argument("--sublogvar_K", type=int, default=1)
 
     parser.add_argument("--lr_fwd", type=float, default=1e-3)
     parser.add_argument("--lr_bwd", type=float, default=None)
@@ -237,7 +236,7 @@ if __name__ == "__main__":
     parser.add_argument("--clip_grad_norm", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=2000)
     parser.add_argument("--eval_batch_size", type=int, default=2000)
-    parser.add_argument("--epochs", type=int, default=25000)
+    parser.add_argument("--epochs", type=int, default=10000)
 
     parser.add_argument("--module", type=str, default="pismlp", choices=("pismlp", "mlp", "ddsmlp"))
     parser.add_argument("--use_checkpoint", action="store_true", default=False)
@@ -260,17 +259,17 @@ if __name__ == "__main__":
 
     ################################################################
     ### MLP parameters
-    parser.add_argument("--hidden_dim", type=int, default=256)
-    # parser.add_argument("--s_emb_dim", type=int, default=256)
-    # parser.add_argument("--t_emb_dim", type=int, default=256)
-    # parser.add_argument("--harmonics_dim", type=int, default=256)
+    parser.add_argument("--hidden_dim", type=int, default=64)
+    # parser.add_argument("--s_emb_dim", type=int, default=64)
+    # parser.add_argument("--t_emb_dim", type=int, default=64)
+    # parser.add_argument("--harmonics_dim", type=int, default=64)
     parser.add_argument("--joint_layers", type=int, default=2)
     parser.add_argument("--no_zero_init", action="store_false", dest="zero_init")
     parser.add_argument("--share_embeddings", action="store_true", default=False)
-    parser.add_argument("--flow_hidden_dim", type=int, default=256)
-    # parser.add_argument("--flow_s_emb_dim", type=int, default=256)
-    # parser.add_argument("--flow_t_emb_dim", type=int, default=256)
-    # parser.add_argument("--flow_harmonics_dim", type=int, default=256)
+    parser.add_argument("--flow_hidden_dim", type=int, default=64)
+    # parser.add_argument("--flow_s_emb_dim", type=int, default=64)
+    # parser.add_argument("--flow_t_emb_dim", type=int, default=64)
+    # parser.add_argument("--flow_harmonics_dim", type=int, default=64)
     parser.add_argument("--flow_layers", type=int, default=2)
     parser.add_argument("--lp", action="store_true", default=False)
     parser.add_argument("--lp_scaling_per_dimension", action="store_true", default=False)
@@ -289,7 +288,7 @@ if __name__ == "__main__":
 
     ################################################################
     ### For replay buffer
-    parser.add_argument("--no_use_buffer", action="store_false", dest="use_buffer")
+    parser.add_argument("--use_buffer", action="store_true", default=False)
     parser.add_argument("--buffer_size", type=int, default=-1)  # 100 * batch_size by default
     # prioritization
     parser.add_argument(
