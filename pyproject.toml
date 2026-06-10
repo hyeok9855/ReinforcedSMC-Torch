@@ -1,0 +1,25 @@
+[project]
+name = "reinforced-smc-torch"
+version = "0.1.0"
+description = "Reinforced Sequential Monte Carlo for Amortised Sampling (PyTorch version)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch>=2.0.0",
+    "einops>=0.6.0",
+    "numpy<2",
+    "ott-jax>=0.6.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "tqdm>=4.66.1",
+    "POT>=0.9.0",
+    "wandb>=0.15.0",
+    "mdtraj>=1.10.3",
+    "openmm>=8.2.0",
+    "openmmtools @ git+https://github.com/choderalab/openmmtools.git@0.24.2",
+    "boltzgen @ git+https://github.com/VincentStimper/boltzmann-generators.git",
+    "netcdf4>=1.6.0",
+    "mpiplus @ git+https://github.com/choderalab/mpiplus.git@v0.0.2",
+    "pymbar>=3.0.0",
+    "numba",
+]

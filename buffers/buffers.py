@@ -60,8 +60,8 @@ class TerminalStateBuffer:
                 self.priority_dataset.add(losses[mask].log())
             case "normalized_iw":
                 assert log_iws is not None
-                log_iws, _ = binary_search_smoothing(log_iws, self.target_ess)
-                log_iws = log_iws.log_softmax(dim=0)
+                log_iws_smoothed, _ = binary_search_smoothing(log_iws.unsqueeze(1), self.target_ess)
+                log_iws = log_iws_smoothed.squeeze(1).log_softmax(dim=0)
                 self.priority_dataset.add(log_iws[mask])
             case "iw":
                 assert log_iws is not None
@@ -91,7 +91,8 @@ class TerminalStateBuffer:
                 self.priority_dataset.update(indices, losses.log())
             case "normalized_iw":
                 assert log_iws is not None
-                log_iws, _ = binary_search_smoothing(log_iws, self.target_ess)
+                log_iws_smoothed, _ = binary_search_smoothing(log_iws.unsqueeze(1), self.target_ess)
+                log_iws = log_iws_smoothed.squeeze(1)
                 self.priority_dataset.update(indices, log_iws)
             case "iw":
                 assert log_iws is not None

@@ -1,4 +1,5 @@
 #! /bin/bash
+export PYTHONWARNINGS="ignore"
 
 ALG=${1}  # pis, tb, tb_buf, tb_iwbuf, tb_buf_mcmc, tb_iwbuf_mcmc, tb-subtb_buf_smc, tb-subtb_iwbuf_smc, tb-subtb_buf_smc_mcmc, tb-subtb_iwbuf_smc_mcmc
 SEED=${2}

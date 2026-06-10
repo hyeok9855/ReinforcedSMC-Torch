@@ -1,6 +1,8 @@
 import itertools
 import warnings
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
 import wandb
@@ -39,8 +41,10 @@ def sliced_log_reward(x: torch.Tensor, energy: BaseEnergy, dims: tuple) -> torch
 
 
 def fig_to_image(fig):
+    import numpy as np
     fig.canvas.draw()
-    return PILImage.frombytes("RGB", fig.canvas.get_width_height(), fig.canvas.tostring_rgb())
+    rgba = np.asarray(fig.canvas.buffer_rgba())
+    return PILImage.fromarray(rgba).convert("RGB")
 
 
 def viz_2d_slice(

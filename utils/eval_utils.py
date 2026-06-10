@@ -99,11 +99,11 @@ def wasserstein(
 
                 geom = pointcloud.PointCloud(self.groundtruth, model_samples, epsilon=1e-3)
 
-                sd = sinkhorn_divergence.sinkhorn_divergence(
+                sd, _ = sinkhorn_divergence.sinkhorn_divergence(
                     geom,
                     x=geom.x,
                     y=geom.y,
-                ).divergence
+                )
 
                 return sd
 
