@@ -5,7 +5,6 @@ description = "Reinforced Sequential Monte Carlo for Amortised Sampling (PyTorch
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "torch>=2.0.0",
     "einops>=0.6.0",
     "numpy<2",
     "ott-jax>=0.6.0",
@@ -22,4 +21,49 @@ dependencies = [
     "mpiplus @ git+https://github.com/choderalab/mpiplus.git@v0.0.2",
     "pymbar>=3.0.0",
     "numba",
+]
+
+[dependency-groups]
+cu128 = ["torch>=2.0.0"]
+cu126 = ["torch>=2.0.0"]
+cu130 = ["torch>=2.0.0"]
+cpu = ["torch>=2.0.0"]
+
+[tool.uv]
+default-groups = ["cu128"]
+conflicts = [
+    [{ group = "cu128" }, { group = "cu126" }],
+    [{ group = "cu128" }, { group = "cu130" }],
+    [{ group = "cu128" }, { group = "cpu" }],
+    [{ group = "cu126" }, { group = "cu130" }],
+    [{ group = "cu126" }, { group = "cpu" }],
+    [{ group = "cu130" }, { group = "cpu" }],
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", group = "cu128" },
+    { index = "pytorch-cu126", group = "cu126" },
+    { index = "pytorch-cu130", group = "cu130" },
+    { index = "pytorch-cpu", group = "cpu" },
 ]

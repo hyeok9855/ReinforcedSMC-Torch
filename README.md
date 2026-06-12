@@ -11,6 +11,16 @@ First, synchronize the dependencies to set up a virtual environment and install 
 uv sync
 ```
 
+By default, `uv sync` installs PyTorch built for **CUDA 12.8** (`cu128`). To use a different PyTorch/CUDA build, pass a dependency group instead:
+
+```bash
+# CUDA 13.0
+uv sync --no-default-groups --group cu130
+
+# CPU-only (e.g. macOS or machines without a GPU)
+uv sync --no-default-groups --group cpu
+```
+
 This will automatically create a virtual environment (`.venv`) and install all required packages (including PyTorch, OpenMM, openmmtools, and boltzgen).
 
 
