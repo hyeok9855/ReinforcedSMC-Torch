@@ -7,7 +7,7 @@ import torch
 from PIL import Image as PILImage
 
 import wandb
-from energies import BaseEnergy
+from energies.base import BaseEnergy
 from utils.particle_system import interatomic_distance
 
 matplotlib.use("Agg")

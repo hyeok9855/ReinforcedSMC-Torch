@@ -90,7 +90,7 @@ def run_job(params, gpu_queue, epochs, dry_run):
         "--smc_sampling",
         "systematic",
         "--smc_every",
-        "3",
+        str(int(bwd_to_fwd)),
         "--buffer_size",
         "400000",
         "--bwd_to_fwd_ratio",

@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+LOGR_FLOOR = -1e10
+
 
 def tb_loss(
     log_pfs: torch.Tensor,
@@ -122,7 +124,9 @@ def get_loss(
     # Avoid in-place mutation
     first_col = (log_Z + init_log_probs).unsqueeze(1)
     middle_cols = log_fs[:, 1:-1]
-    last_col = (log_fs[:, -1] * invtemp).unsqueeze(1)
+    last_col = torch.nan_to_num(
+        log_fs[:, -1] * invtemp, nan=LOGR_FLOOR, neginf=LOGR_FLOOR, posinf=-LOGR_FLOOR
+    ).unsqueeze(1)
     log_fs = torch.cat([first_col, middle_cols, last_col], dim=1)
 
     if loss_type == "tb":

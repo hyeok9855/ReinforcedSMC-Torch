@@ -196,12 +196,17 @@ class Trainer:
             raise ValueError("Loss is NaN")
 
         loss.backward()
-        if self.clip_grad_norm > 0.0 or self.clip_logZ_grad_norm_ratio > 0.0:
-            logZ_abs = abs(self.gfn_model.pred_module.log_Z.item())
-            clip_logZ_grad_norm = (
-                self.clip_logZ_grad_norm_ratio * logZ_abs if logZ_abs > 0.0 else 0.0
+        logZ_abs = abs(self.gfn_model.pred_module.log_Z.item())
+        try:
+            self.optimizer.clip_grad_norm_(
+                self.clip_grad_norm or float("inf"),
+                self.clip_logZ_grad_norm_ratio * logZ_abs or float("inf"),
             )
-            self.optimizer.clip_grad_norm_(self.clip_grad_norm, clip_logZ_grad_norm)
+        except RuntimeError:
+            print(f"Non-finite gradients at it={it} (loss={loss.item():.4g}); skipping update...")
+            self.gfn_model.zero_grad()
+            return loss.item()
+
         self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()

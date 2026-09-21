@@ -31,11 +31,13 @@ class CompositeOptimizer:
         groups.extend(self.logZ_optimizer.param_groups)
         return groups
 
-    def clip_grad_norm_(self, max_norm: float, logZ_max_norm: float = 0.0):
-        if max_norm > 0.0:
-            torch.nn.utils.clip_grad_norm_(self._clip_params, max_norm)
-        if logZ_max_norm > 0.0 and self._logZ_clip_params:
-            torch.nn.utils.clip_grad_norm_(self._logZ_clip_params, logZ_max_norm)
+    def clip_grad_norm_(self, max_norm: float, logZ_max_norm: float = 0.0) -> None:
+        """Clip gradients in place; a non-finite total norm raises RuntimeError."""
+        torch.nn.utils.clip_grad_norm_(self._clip_params, max_norm, error_if_nonfinite=True)
+        if self._logZ_clip_params:
+            torch.nn.utils.clip_grad_norm_(
+                self._logZ_clip_params, logZ_max_norm, error_if_nonfinite=True
+            )
 
     def step(self):
         self.optimizer.step()
