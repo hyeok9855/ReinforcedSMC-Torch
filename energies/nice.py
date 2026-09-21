@@ -10,6 +10,7 @@ normalized: `gt_logz() == 0`, and exact ground-truth samples are available by
 pushing gaussian noise through the inverse flow.
 """
 
+import contextlib
 import math
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from matplotlib import pyplot as plt
 
 import wandb
 from energies.base import BaseEnergy
-from utils.misc_utils import temp_seed
+from utils.misc_utils import maybe_compile, temp_seed
 from utils.plot_utils import fig_to_image, viz_energy_hist
 
 DATA_PATH = Path(__file__).parent / "data" / "nice"
@@ -29,6 +30,17 @@ _CHECKPOINTS = {
     "fashion_mnist": DATA_PATH / "params_nice_fashion_mnist_28x28.pt",
 }
 _IMAGE_SIZE = {"mnist": 14, "fashion_mnist": 28}
+
+
+@contextlib.contextmanager
+def matmul_precision(precision: str):
+    """Temporarily set `torch.set_float32_matmul_precision`."""
+    old = torch.get_float32_matmul_precision()
+    torch.set_float32_matmul_precision(precision)
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(old)
 
 
 class NICEFlow(nn.Module):
@@ -114,6 +126,23 @@ class NICE(BaseEnergy):
         # only w.r.t. x.
         self.flow.eval().requires_grad_(False).to(device)
 
+        self._score_precision = "highest"
+        if torch.device(self.device).type == "cuda" and torch.get_default_dtype() == torch.float32:
+            self._score_precision = "high"
+
+        def _score(x: torch.Tensor) -> torch.Tensor:
+            return torch.func.grad(lambda s: self.flow.log_prob(s).sum())(x)
+
+        self._log_prob_fn = maybe_compile(self.flow.log_prob)
+        self._score_fn = maybe_compile(_score)
+
+    def grad_log_reward(self, x: torch.Tensor) -> torch.Tensor:
+        batched = x.ndim == 2
+        x = x.detach() if batched else x.detach().unsqueeze(0)
+        with matmul_precision(self._score_precision):
+            grad = self._score_fn(x).detach()
+        return grad if batched else grad.squeeze(0)
+
     def energy(self, x: torch.Tensor) -> torch.Tensor:
         return -self._log_prob(x)
 
@@ -130,7 +159,7 @@ class NICE(BaseEnergy):
         if not batched:
             x = x.unsqueeze(0)
 
-        log_prob = self.flow.log_prob(x)
+        log_prob = self._log_prob_fn(x)
 
         if not batched:
             log_prob = log_prob.squeeze(0)

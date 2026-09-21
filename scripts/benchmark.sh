@@ -46,6 +46,7 @@ target_spec() {
 mkdir -p "$LOG_DIR"
 i=0
 
+for s in $SEEDS; do
 for m in $METHODS; do
     for t in $TARGETS; do
         target_spec "$t"
@@ -71,8 +72,7 @@ for m in $METHODS; do
             *) echo "Unknown method: $m" >&2; exit 1 ;;
         esac
 
-        for s in $SEEDS; do
-            tag="${m}_${t}_seed${s}"
+                    tag="${m}_${t}_seed${s}"
             [ -f "$LOG_DIR/$tag.done" ] && continue
             gpu=${GPUS[$((i % ${#GPUS[@]}))]}
             i=$((i + 1))
