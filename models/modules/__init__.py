@@ -3,9 +3,9 @@ import argparse
 from energies import BaseEnergy
 
 from .base import BaseModule
+from .ddsmlp_modules import DDSMLPModule
 from .mlp_modules import MLPModule
 from .pismlp_modules import PISMLPModule
-from .ddsmlp_modules import DDSMLPModule
 
 
 def get_module(args: argparse.Namespace, energy: BaseEnergy) -> BaseModule:

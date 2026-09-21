@@ -1,14 +1,29 @@
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def tb_loss(
     log_pfs: torch.Tensor,
     log_pbs: torch.Tensor,
     log_fs: torch.Tensor,
+    logZ_huber_delta: float = 0.0,
 ) -> torch.Tensor:
-    tb_discrepancy = log_fs[:, 0] + log_pfs.sum(-1) - log_fs[:, -1] - log_pbs.sum(-1)
-    return tb_discrepancy**2
+    log_iws = log_pfs.sum(-1) - log_fs[:, -1] - log_pbs.sum(-1)
+    if logZ_huber_delta <= 0.0:
+        return (log_iws + log_fs[:, 0]) ** 2
+
+    policy_discrepancy = log_iws + log_fs[:, 0].detach()
+    policy_losses = policy_discrepancy**2
+
+    logZ_discrepancy = log_iws.detach() + log_fs[:, 0]
+    logZ_losses = 2.0 * F.huber_loss(
+        logZ_discrepancy,
+        torch.zeros_like(logZ_discrepancy),
+        delta=logZ_huber_delta,
+        reduction="none",
+    )
+    return policy_losses + logZ_losses
 
 
 def logvar_loss(
@@ -80,9 +95,10 @@ def tb_subtb_loss(  # TB + SubTB (chunk)
     log_fs: torch.Tensor,
     chunk_size: int,
     subtb_weight: float = 1.0,
+    logZ_huber_delta: float = 0.0,
 ) -> torch.Tensor:
     # TB for log_Z, log_pfs, and log_pbs
-    tb_losses = tb_loss(log_pfs, log_pbs, log_fs)
+    tb_losses = tb_loss(log_pfs, log_pbs, log_fs, logZ_huber_delta)
     # SubTB for log_fs (intermediate flows)
     log_fs[:, 0] = log_fs[:, 0].detach()
     subtb_losses = subtb_chunk_loss(log_pfs.detach(), log_pbs.detach(), log_fs, chunk_size)
@@ -100,6 +116,7 @@ def get_loss(
     subtb_coef_matrix: torch.Tensor | None = None,
     subtb_chunk_size: int = 0,
     subtb_weight: float = 1.0,
+    logZ_huber_delta: float = 0.0,  # only affects the TB term (`tb` and `tb-subtb`)
     ndim: int | None = None,
 ) -> torch.Tensor:
     # Avoid in-place mutation
@@ -109,7 +126,7 @@ def get_loss(
     log_fs = torch.cat([first_col, middle_cols, last_col], dim=1)
 
     if loss_type == "tb":
-        losses = tb_loss(log_pfs, log_pbs, log_fs)
+        losses = tb_loss(log_pfs, log_pbs, log_fs, logZ_huber_delta)
     elif loss_type == "logvar":
         losses = logvar_loss(log_pfs, log_pbs, log_fs[:, -1], init_log_probs)
     elif loss_type == "db":
@@ -121,7 +138,9 @@ def get_loss(
             assert subtb_coef_matrix is not None
             losses = subtb_lambda_loss(log_pfs, log_pbs, log_fs, subtb_coef_matrix)
     elif loss_type == "tb-subtb":
-        losses = tb_subtb_loss(log_pfs, log_pbs, log_fs, subtb_chunk_size, subtb_weight)
+        losses = tb_subtb_loss(
+            log_pfs, log_pbs, log_fs, subtb_chunk_size, subtb_weight, logZ_huber_delta
+        )
     elif loss_type == "rev_kl":
         assert ndim is not None
         losses = (1 / ndim) * ((log_pfs.sum(-1) + init_log_probs) - log_pbs.sum(-1) - log_fs[:, -1])

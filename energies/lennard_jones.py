@@ -1,5 +1,5 @@
-from pathlib import Path
 import warnings
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -7,7 +7,7 @@ import torch
 from energies.base import BaseEnergy
 from utils.misc_utils import temp_seed
 from utils.particle_system import interatomic_distance, remove_mean
-from utils.plot_utils import viz_interatomic_dist_hist, viz_energy_hist
+from utils.plot_utils import viz_energy_hist, viz_interatomic_dist_hist
 
 DATA_PATH = Path(__file__).parent / "data"
 

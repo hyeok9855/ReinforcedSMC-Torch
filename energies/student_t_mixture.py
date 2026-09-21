@@ -3,9 +3,9 @@ from functools import partial
 import numpy as np
 import torch
 import torch.distributions as D
-import wandb
 from matplotlib import pyplot as plt
 
+import wandb
 from energies.base import BaseEnergy
 from utils.misc_utils import temp_seed
 from utils.plot_utils import fig_to_image, sliced_log_reward, viz_energy_hist
@@ -35,7 +35,8 @@ class StudentTMixture(BaseEnergy):
 
         mixture_dist = D.Categorical(logits=logits)
         components_dist = D.Independent(
-            D.StudentT(loc=locs, scale=scales, df=dofs), reinterpreted_batch_ndims=1  # type: ignore
+            D.StudentT(loc=locs, scale=scales, df=dofs),
+            reinterpreted_batch_ndims=1,  # type: ignore
         )
         self.distribution = D.MixtureSameFamily(mixture_dist, components_dist)
 

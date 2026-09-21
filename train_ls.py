@@ -1,4 +1,19 @@
+"""Entry point for the gfn-diffusion baseline: TB / VarGrad + MCMC local search (LS).
+
+Reference:
+- Sendera et al., "Improved off-policy training of diffusion samplers", NeurIPS 2024
+- https://github.com/GFNOrg/gfn-diffusion.
+
+python train_ls.py --energy_name manywell --ndim 32 --loss_type tb \\
+    --lr_fwd 1e-3 --lr_logZ 1e-1 --batch_size 300 --epochs 25000 --buffer_size 600000 \\
+    --mcmc_type mala --mcmc_freq 100 --mcmc_n_steps 200 --mcmc_burn_in 100 --mcmc_step_size 0.1
+
+Use ``--loss_type vargrad`` for "GFlowNet VarGrad + LS", and ``--prioritization iw`` (or
+``normalized_iw``) for importance-weighted replay.
+"""
+
 import argparse
+import copy
 import os
 
 import torch
@@ -10,13 +25,30 @@ from energies import get_energy
 from mcmcs import MALA, MD
 from models import GFN
 from models.modules import get_module
-from trainer import Trainer
+from trainer_ls import LocalSearchTrainer
 from utils.misc_utils import get_name, save_run_artifacts, set_seed
 from utils.sampling_utils import get_sampling_func
 from utils.train_utils import get_gfn_optimizer
 
 
-def train(args):
+def get_ls_name(args: argparse.Namespace) -> str:
+    # Reuse ``get_name`` for everything shared with ``train.py`` (it already encodes the buffer
+    # and ``--mcmc_*`` settings), then mark the run as the local-search baseline.
+    base_args = copy.copy(args)
+    base_args.exp_name = ""
+    name = get_name(base_args)
+
+    name += "_ls"
+    if args.mcmc_type == "mala" and not args.mcmc_adaptive:
+        name += "-nosched"
+    if args.ls_buffer_size != args.buffer_size:
+        name += f"-buf{args.ls_buffer_size}"
+
+    name += f"_{args.exp_name}" if args.exp_name else ""
+    return name
+
+
+def train(args: argparse.Namespace) -> None:
     if "SLURM_PROCID" in os.environ:
         args.seed += int(os.environ["SLURM_PROCID"])
     set_seed(args.seed)
@@ -31,7 +63,7 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
 
     energy = get_energy(args, device, seed=args.seed, n_threads=args.n_threads)
-    exp_name = get_name(args)
+    exp_name = get_ls_name(args)
 
     wandb.init(
         project="ReinforcedSMC-Torch",
@@ -57,9 +89,9 @@ def train(args):
         # --- OU Args --- #
         init_std=args.init_std,
         noise_scale=args.noise_scale,
-        # --- SubTB Args --- #
-        partial_energy=args.partial_energy,
-        learn_beta=args.learn_beta,
+        # --- SubTB Args (unused by TB / VarGrad) --- #
+        partial_energy=False,
+        learn_beta=False,
         device=device,
     ).to(device)
 
@@ -68,8 +100,6 @@ def train(args):
         lr_fwd=args.lr_fwd,
         lr_bwd=args.lr_bwd,
         lr_logZ=args.lr_logZ,
-        lr_flow=args.lr_flow,
-        lr_beta=args.lr_beta,
         lr_lgv=args.lr_lgv,
         momentum_logZ=args.momentum_logZ,
         logZ_optimizer_type=args.logZ_optimizer,
@@ -80,10 +110,13 @@ def train(args):
         gamma=args.gamma,
     )
 
-    buffer = mcmc = None
-    if args.use_buffer:
-        buffer = TerminalStateBuffer(
-            args.buffer_size,
+    # Two buffers with identical settings: ``buffer`` receives on-policy terminal states from
+    # forward steps and only seeds the local search; ``ls_buffer`` receives the MCMC-refined
+    # states and feeds the backward steps.
+    def make_buffer(buffer_size: int):
+        # Same construction as in ``train.py``
+        return TerminalStateBuffer(
+            buffer_size,
             device,
             prioritization=args.prioritization,
             sampling_func=get_sampling_func(args.buffer_sampling, args.rank_k),
@@ -91,22 +124,24 @@ def train(args):
             target_ess=args.buffer_target_ess,
         )
 
-        if args.mcmc_type != "none":
-            mcmc_args = {
-                "energy": energy,
-                "n_steps": args.mcmc_n_steps,
-                "burn_in": args.mcmc_burn_in,
-                "thinning": args.mcmc_thinning,
-                "step_size": args.mcmc_step_size,
-            }
-            if args.mcmc_type == "md":
-                mcmc = MD(**mcmc_args, gamma=args.mcmc_gamma)
-            elif args.mcmc_type == "mala":
-                mcmc = MALA(**mcmc_args, ld_schedule=args.mcmc_adaptive)
-            else:
-                raise ValueError(f"Invalid MCMC type: {args.mcmc_type}")
+    buffer = make_buffer(args.buffer_size)
+    ls_buffer = make_buffer(args.ls_buffer_size)
 
-    trainer = Trainer(
+    mcmc_args = {
+        "energy": energy,
+        "n_steps": args.mcmc_n_steps,
+        "burn_in": args.mcmc_burn_in,
+        "thinning": args.mcmc_thinning,
+        "step_size": args.mcmc_step_size,
+    }
+    if args.mcmc_type == "md":
+        mcmc = MD(**mcmc_args, gamma=args.mcmc_gamma)
+    elif args.mcmc_type == "mala":
+        mcmc = MALA(**mcmc_args, ld_schedule=args.mcmc_adaptive)
+    else:
+        raise ValueError(f"Invalid MCMC type: {args.mcmc_type}")
+
+    trainer = LocalSearchTrainer(
         energy=energy,
         gfn_model=gfn_model,
         optimizer=gfn_optimizer,
@@ -115,18 +150,12 @@ def train(args):
         clip_logZ_grad_norm_ratio=args.clip_logZ_grad_norm_ratio,
         loss_type=args.loss_type,
         logZ_huber_delta=args.logZ_huber_delta,
-        subtb_lambda=args.subtb_lambda,
-        subtb_n_chunks=args.subtb_n_chunks,
         n_epochs=args.epochs,
         bwd_to_fwd_ratio=args.bwd_to_fwd_ratio,
         buffer=buffer,
+        ls_buffer=ls_buffer,
         prefill_epochs=args.prefill_epochs,
         batch_size=args.batch_size,
-        smc=args.smc,
-        smc_sampling_func=get_sampling_func(args.smc_sampling),
-        smc_resample_threshold=args.smc_resample_threshold,
-        smc_target_ess=args.smc_target_ess,
-        smc_every=args.smc_every,
         mcmc=mcmc,
         mcmc_freq=args.mcmc_freq,
         mcmc_batch_size=args.mcmc_batch_size,
@@ -142,7 +171,7 @@ def train(args):
     # Main training loop #
     ######################
 
-    pbar = trange(args.epochs, desc="[Train]", dynamic_ncols=True)
+    pbar = trange(args.epochs, desc="[Train LS]", dynamic_ncols=True)
     eubo_cache = elbo_cache = ess_cache = float("nan")
     for it in pbar:
         metrics = dict()
@@ -163,6 +192,7 @@ def train(args):
         # Train
         metrics["train/loss"] = trainer.train_step(it)
         metrics["train/logZ_learned"] = gfn_model.pred_module.log_Z.item()
+        metrics.update(trainer.pop_ls_metrics())  # non-empty only right after a local search
         pbar.set_postfix(
             {
                 "Loss": metrics["train/loss"],
@@ -204,7 +234,9 @@ def train(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="gfn-diffusion baseline: TB / VarGrad + MCMC local search"
+    )
     parser.add_argument(
         "--energy_name",
         type=str,
@@ -224,26 +256,19 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument("--ndim", type=int, default=2)
-    parser.add_argument("--n_threads", type=int, default=16)  # only for ALDP
+    parser.add_argument("--n_threads", type=int, default=32)  # only for ALDP
     parser.add_argument("--exp_name", type=str, default="")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--cpu", action="store_true", default=False)
 
-    parser.add_argument(
-        "--loss_type",
-        type=str,
-        default="tb",
-        choices=("tb", "logvar", "db", "subtb", "tb-subtb", "rev_kl", "mle"),
-    )
-    parser.add_argument("--subtb_lambda", type=float, default=2.0)
-    parser.add_argument("--subtb_n_chunks", type=int, default=4)
+    ################################################################
+    parser.add_argument("--loss_type", type=str, default="tb", choices=("tb", "logvar"))
     parser.add_argument("--logZ_huber_delta", type=float, default=10.0)
+    ################################################################
 
     parser.add_argument("--lr_fwd", type=float, default=1e-3)
     parser.add_argument("--lr_bwd", type=float, default=None)
     parser.add_argument("--lr_logZ", type=float, default=1e-1)
-    parser.add_argument("--lr_flow", type=float, default=1e-3)
-    parser.add_argument("--lr_beta", type=float, default=1e-1)
     parser.add_argument("--lr_lgv", type=float, default=1e-3)
     parser.add_argument("--logZ_optimizer", type=str, default="adam", choices=("adam", "sgd"))
     parser.add_argument(
@@ -255,7 +280,7 @@ if __name__ == "__main__":
     parser.add_argument("--milestones", type=float, nargs="+", default=[0.5, 0.75])
     parser.add_argument("--gamma", type=float, default=0.3)
 
-    parser.add_argument("--bwd_to_fwd_ratio", type=float, default=2.0)
+    parser.add_argument("--bwd_to_fwd_ratio", type=float, default=1.0)
     parser.add_argument("--clip_grad_norm", type=float, default=1.0)
     parser.add_argument("--clip_logZ_grad_norm_ratio", type=float, default=0.0)
     parser.add_argument("--batch_size", type=int, default=2000)
@@ -284,17 +309,11 @@ if __name__ == "__main__":
     ################################################################
     # MLP parameters
     parser.add_argument("--hidden_dim", type=int, default=64)
-    # parser.add_argument("--s_emb_dim", type=int, default=64)
-    # parser.add_argument("--t_emb_dim", type=int, default=64)
-    # parser.add_argument("--harmonics_dim", type=int, default=64)
     parser.add_argument("--joint_layers", type=int, default=2)
     parser.add_argument("--no_zero_init", action="store_false", dest="zero_init")
     parser.add_argument("--share_embeddings", action="store_true", default=False)
-    parser.add_argument("--flow_hidden_dim", type=int, default=64)
-    # parser.add_argument("--flow_s_emb_dim", type=int, default=64)
-    # parser.add_argument("--flow_t_emb_dim", type=int, default=64)
-    # parser.add_argument("--flow_harmonics_dim", type=int, default=64)
-    parser.add_argument("--flow_layers", type=int, default=2)
+    parser.add_argument("--flow_hidden_dim", type=int, default=64)  # unused (no flow model)
+    parser.add_argument("--flow_layers", type=int, default=2)  # unused (no flow model)
     parser.add_argument("--lp", action="store_true", default=False)
     parser.add_argument(
         "--no_lp_scaling_per_dimension", action="store_false", dest="lp_scaling_per_dimension"
@@ -307,23 +326,22 @@ if __name__ == "__main__":
     parser.add_argument("--pb_scale_range", type=float, default=0.1)
     parser.add_argument("--learn_variance", action="store_true", default=False)
     parser.add_argument("--log_var_range", type=float, default=4.0)
-
-    parser.add_argument("--no_partial_energy", action="store_false", dest="partial_energy")
-    parser.add_argument("--no_learn_beta", action="store_false", dest="learn_beta")
     ################################################################
 
     ################################################################
-    # For replay buffer
-    parser.add_argument("--use_buffer", action="store_true", default=False)
+    # Replay buffers (forward buffer + dedicated local-search buffer), same options as train.py
+    # Accepted for command-line parity with train.py only: local search is always buffered,
+    # so ``args.use_buffer`` is forced True below regardless of this flag.
+    parser.add_argument("--use_buffer", action="store_true", default=True)
     parser.add_argument("--buffer_size", type=int, default=-1)  # 100 * batch_size by default
-    # prioritization
+    parser.add_argument("--ls_buffer_size", type=int, default=-1)  # same as buffer_size by default
     parser.add_argument(
         "--prioritization",
         type=str,
         default="none",
-        choices=("none", "reward", "loss", "iw", "normalized_iw"),
+        choices=("none", "reward", "iw", "normalized_iw"),
     )
-    # buffer sampling strategy  # TODO: support percentile-based sampling
+    # buffer sampling strategy
     parser.add_argument(
         "--buffer_sampling",
         type=str,
@@ -341,28 +359,16 @@ if __name__ == "__main__":
     ################################################################
 
     ################################################################
-    # For SMC
-    parser.add_argument("--smc", action="store_true", default=False)
-    parser.add_argument(
-        "--smc_sampling",
-        type=str,
-        default="systematic",
-        choices=("multinomial", "stratified", "systematic", "rank"),
-    )
-    parser.add_argument("--smc_resample_threshold", type=float, default=0.2)
-    parser.add_argument("--smc_target_ess", type=float, default=0.05)
-    parser.add_argument("--smc_every", type=int, default=1)
-    ################################################################
-
-    ################################################################
-    # For MCMC
-    parser.add_argument("--mcmc_type", type=str, default="none", choices=("none", "md", "mala"))
+    # MCMC local search (same flag names as train.py; run on a batch from the forward buffer)
+    parser.add_argument("--mcmc_type", type=str, default="mala", choices=("mala", "md"))
     parser.add_argument("--mcmc_freq", type=int, default=100)
-    parser.add_argument("--mcmc_batch_size", type=int, default=100)
-    parser.add_argument("--mcmc_n_steps", type=int, default=1000)
+    parser.add_argument("--mcmc_batch_size", type=int, default=-1)
+    parser.add_argument("--mcmc_n_steps", type=int, default=200)
     parser.add_argument("--mcmc_burn_in", type=int, default=100)
-    parser.add_argument("--mcmc_thinning", type=int, default=1)
-    parser.add_argument("--mcmc_step_size", type=float, default=0.001)
+    parser.add_argument(
+        "--mcmc_thinning", type=int, default=-1
+    )  # keep 10 samples per chain by default
+    parser.add_argument("--mcmc_step_size", type=float, default=0.1)
     parser.add_argument("--mcmc_gamma", type=float, default=1.0)  # for MD
     parser.add_argument(
         "--mcmc_no_adaptive", action="store_false", dest="mcmc_adaptive", default=True
@@ -400,35 +406,32 @@ if __name__ == "__main__":
         assert args.init_log_Z in ["iw_elbo", "elbo"]
 
     args.loss_type_str = args.loss_type
-    if args.loss_type in ["db", "subtb", "tb-subtb"]:
-        args.conditional_flow_model = True
-        if args.partial_energy:
-            args.loss_type_str = "fl-" + args.loss_type_str
-        if args.loss_type == "subtb":
-            if args.subtb_n_chunks > 0:
-                assert args.num_steps % args.subtb_n_chunks == 0
-                args.loss_type_str += f"-nchunks{args.subtb_n_chunks}"
-            else:
-                args.loss_type_str += f"-lambda{args.subtb_lambda}"
-    else:
-        args.conditional_flow_model = False
-        args.partial_energy = False
-        args.learn_beta = False
-
     if args.learn_pb:
         args.loss_type_str += "-learnpb"
+
+    args.conditional_flow_model = False
+    args.partial_energy = False
+    args.learn_beta = False
+
+    # Attributes expected by ``utils.misc_utils.get_name`` (shared with ``train.py``)
+    args.use_buffer = True
+    args.smc = False
 
     if args.lr_bwd is None:
         args.lr_bwd = args.lr_fwd
 
-    if args.loss_type == "mle" or args.loss_type == "rev_kl":
-        args.use_buffer = False
-
-    if args.smc:
-        assert args.use_buffer, "SMC requires buffer"
-
     if args.buffer_size == -1:
         args.buffer_size = 100 * args.batch_size
+    if args.ls_buffer_size == -1:
+        args.ls_buffer_size = args.buffer_size
+    if args.mcmc_batch_size == -1:
+        args.mcmc_batch_size = args.batch_size
+    if args.mcmc_thinning == -1:
+        args.mcmc_thinning = args.mcmc_n_steps // 10
+    if args.mcmc_type == "mala":
+        assert args.mcmc_n_steps > args.mcmc_burn_in + 1, "mcmc_n_steps must exceed burn_in + 1"
+    else:
+        assert args.mcmc_n_steps > args.mcmc_burn_in, "mcmc_n_steps must exceed mcmc_burn_in"
 
     if args.prefill_epochs == -1:
         args.prefill_epochs = int(min(100, args.buffer_size / args.batch_size))

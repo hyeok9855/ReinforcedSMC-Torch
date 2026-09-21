@@ -10,7 +10,6 @@ from ott.geometry import pointcloud
 
 # from ott.problems.linear import linear_problem
 # from ott.solvers.linear import sinkhorn
-
 from utils.misc_utils import logmeanexp
 
 MIN_VAR_EST = 1e-8
@@ -96,15 +95,8 @@ def wasserstein(
                 """
                 Entropy regularized debiased optimal transport (Sinkhorn divergence - SD) cost (see https://ott-jax.readthedocs.io/en/latest/tutorials/point_clouds.html)
                 """
-
                 geom = pointcloud.PointCloud(self.groundtruth, model_samples, epsilon=1e-3)
-
-                sd, _ = sinkhorn_divergence.sinkhorn_divergence(
-                    geom,
-                    x=geom.x,
-                    y=geom.y,
-                )
-
+                sd, _ = sinkhorn_divergence.sinkhorn_divergence(geom, x=geom.x, y=geom.y)
                 return sd
 
         ret = SD(jnp.array(x0), epsilon=1e-3).compute_SD(jnp.array(x1))
@@ -293,6 +285,144 @@ def _mmd2_and_variance(K_XX, K_XY, K_YY, const_diagonal=False, biased=False):
     return mmd2, var_est
 
 
+def wasserstein2_squared(
+    x0: np.ndarray,
+    x1: np.ndarray,
+    weights: np.ndarray | None = None,
+    num_iter_max: int = 10_000_000,
+) -> tuple[float, bool]:
+    """Exact empirical W2^2: the optimal transport cost under a squared-euclidean
+    ground metric. Returns ``(w2_squared, converged)``.
+
+    This is 1step_energy_sampler's headline `w2_squared` (their
+    `study_metrics.wasserstein_squared_checked`, recorded in each target's
+    `complete.json`). Their `metrics.wasserstein2` and our `wasserstein(power=2)`
+    both return the *square root* of this quantity -- verified equal to
+    float64 precision -- so `2-Wasserstein == sqrt(w2_squared)` exactly.
+
+    `ot.emd2` silently returns a suboptimal value when it exhausts its iteration
+    budget, so the convergence flag is reported alongside rather than discarded.
+    Their protocol caps at 5e6 iterations; we allow 1e7, which can only help a
+    solve that would otherwise hit the cap.
+    """
+    if x0.ndim > 2:
+        x0 = x0.reshape(x0.shape[0], -1)
+    if x1.ndim > 2:
+        x1 = x1.reshape(x1.shape[0], -1)
+
+    a = pot.unif(x0.shape[0]) if weights is None else weights
+    b = pot.unif(x1.shape[0])
+    M = pot.dist(x0, x1, metric="sqeuclidean")
+    value, log = pot.emd2(a, b, M, numItermax=num_iter_max, log=True)
+    converged = log.get("result_code") == 1 and log.get("warning") is None
+    return float(value), bool(converged)
+
+
+# ===================================================================
+# MMD estimators ported from 1step_energy_sampler
+# (energy_sampler/metrics.py::compute_mmd and
+#  energy_sampler/metrics_jax.py::_build_mmd_median)
+# ===================================================================
+
+
+def _pdist2(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Exact squared euclidean distances, [n, m]. mm-based cdist loses too many
+    digits in float64 for the median heuristic to be reproducible."""
+    return torch.cdist(x, y, compute_mode="donot_use_mm_for_euclid_dist").pow(2)
+
+
+def compute_mmd(x: torch.Tensor, y: torch.Tensor) -> tuple[float, float]:
+    """Biased MMD^2 with an RBF kernel and pooled median-heuristic bandwidth.
+
+    The default metric of 1step_energy_sampler (configs/metrics/default.yaml).
+    Bandwidth is the median *squared* pairwise distance over a pooled subsample
+    of at most 512 points from each of x and y. Returns ``(mmd2, bandwidth)``.
+    """
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        return float("nan"), float("nan")
+    if x.ndim != 2 or y.ndim != 2 or x.shape[1] != y.shape[1]:
+        raise ValueError(
+            f"x and y must both be [N, D] with matching D (got {tuple(x.shape)}, {tuple(y.shape)})"
+        )
+
+    with torch.no_grad():
+        x, y = x.cpu(), y.cpu()
+        sub = min(512, x.shape[0], y.shape[0])
+        z = torch.cat([x[:sub], y[:sub]], dim=0)
+        dists_sq = torch.pdist(z).pow(2)
+        bw = max(torch.median(dists_sq).item() ** 0.5, 1e-3)
+        denom = 2 * bw**2
+        k_xx = torch.exp(-_pdist2(x, x) / denom).mean()
+        k_yy = torch.exp(-_pdist2(y, y) / denom).mean()
+        k_xy = torch.exp(-_pdist2(x, y) / denom).mean()
+        mmd2 = float((k_xx + k_yy - 2 * k_xy).item())
+    return mmd2, bw
+
+
+def reference_mmd_squared(x, y, bandwidth, block_size=1024):
+    """Biased RBF MMD squared with a fixed bandwidth and float64 block reduction."""
+    if not math.isfinite(bandwidth) or bandwidth <= 0:
+        raise ValueError("bandwidth must be finite and positive")
+    x, y = x.detach().double(), y.detach().double()
+
+    def average(a, b):
+        total = torch.zeros((), dtype=torch.float64, device=a.device)
+        for i in range(0, len(a), block_size):
+            for j in range(0, len(b), block_size):
+                total += torch.exp(
+                    -torch.cdist(a[i : i + block_size], b[j : j + block_size]).square()
+                    / (2 * bandwidth**2)
+                ).sum()
+        return total / (len(a) * len(b))
+
+    with torch.no_grad():
+        value = float((average(x, x) + average(y, y) - 2 * average(x, y)).item())
+    if not math.isfinite(value) or value < -1e-10:
+        raise FloatingPointError(f"Invalid reference-bandwidth MMD squared: {value}")
+    return max(0.0, value)
+
+
+def mmd_median(x: torch.Tensor, y: torch.Tensor) -> float:
+    """MMD under the VSM reporting protocol (mmdfuse ``mmd_median``, gaussian/L2).
+
+    Port of 1step_energy_sampler's jax implementation, kept paste-faithful to
+    the quirks that make the number comparable with published VSM tables:
+
+      * bandwidth = median over the upper triangle of the pooled [X; Y] L2
+        distance matrix **including the diagonal zeros**;
+      * K_XX / K_YY are summed **with** their unit diagonal but normalised by
+        n(n-1), which biases the estimate up by 1/(n-1);
+      * the result is ``sqrt(max(1e-20, .))`` -- an MMD, not an MMD^2.
+
+    Computed in float64 to match their ``jax_enable_x64`` setting.
+    """
+    if x.ndim != 2 or y.ndim != 2 or x.shape[1] != y.shape[1]:
+        raise ValueError(
+            f"x and y must both be [N, D] with matching D (got {tuple(x.shape)}, {tuple(y.shape)})"
+        )
+    n, m = x.shape[0], y.shape[0]
+    if n < 2 or m < 2:
+        return float("nan")
+
+    with torch.no_grad():
+        x = x.detach().double()
+        y = y.detach().double()
+        z = torch.cat([x, y], dim=0)
+        d_zz = _pdist2(z, z).clamp_min(0).sqrt()
+        iu = torch.triu_indices(d_zz.shape[0], d_zz.shape[0], offset=0, device=d_zz.device)
+        bandwidth = torch.median(d_zz[iu[0], iu[1]])
+
+        def gauss(d2: torch.Tensor) -> torch.Tensor:
+            return torch.exp(-d2 / (2 * bandwidth**2))
+
+        k_xx = gauss(_pdist2(x, x))
+        k_yy = gauss(_pdist2(y, y))
+        k_xy = gauss(_pdist2(x, y))
+
+        mmd2 = k_xx.sum() / (n * (n - 1)) + k_yy.sum() / (m * (m - 1)) - 2 * k_xy.mean()
+        return float(torch.sqrt(torch.clamp(mmd2, min=1e-20)).item())
+
+
 def vector_distances(pred, true):
     """computes distances between vectors."""
     mse = torch.nn.functional.mse_loss(pred, true).item()
@@ -305,6 +435,8 @@ def distribution_distance_metrics(
     pred: torch.Tensor,
     true: torch.Tensor,
     weights: torch.Tensor | None = None,
+    mmd_max_samples: int = 2048,
+    mmd_bandwidth: float | None = None,
 ):
     """
     computes distances between distributions.
@@ -318,9 +450,37 @@ def distribution_distance_metrics(
     weights_np = weights.cpu().numpy() if weights is not None else None
 
     w1 = wasserstein(pred_np, true_np, weights=weights_np, power=1)
-    w2 = wasserstein(pred_np, true_np, weights=weights_np, power=2)
+    w2_squared, w2_converged = wasserstein2_squared(pred_np, true_np, weights=weights_np)
     sinkhorn = wasserstein(pred_np, true_np, weights=weights_np, method="sinkhorn")
-    metrics.update({"1-Wasserstein": w1, "2-Wasserstein": w2, "Sinkhorn": sinkhorn})
+    metrics.update(
+        {
+            "1-Wasserstein": w1,
+            "2-Wasserstein": math.sqrt(w2_squared),
+            "w2_squared": w2_squared,
+            "w2_converged": w2_converged,
+            "Sinkhorn": sinkhorn,
+        }
+    )
+
+    # Neither MMD estimator takes sample weights, so they are only meaningful
+    # for unweighted (already-resampled) particles.
+    if weights is None:
+        n_mmd = min(mmd_max_samples, pred.shape[0], true.shape[0])
+        pred_m, true_m = pred[:n_mmd], true[:n_mmd]
+        mmd2, mmd_bw = compute_mmd(pred_m, true_m)
+        metrics.update(
+            {
+                "MMD2": mmd2,
+                "MMD2_bandwidth": mmd_bw,
+                "MMD_median": mmd_median(pred_m, true_m),
+                "MMD_n": n_mmd,
+            }
+        )
+        if mmd_bandwidth is not None:
+            # Uses all samples, not the mmd_max_samples subset: the fixed
+            # bandwidth is only comparable against the pinned n=10_000 protocol.
+            metrics["MMD2_reference"] = reference_mmd_squared(pred, true, mmd_bandwidth)
+            metrics["MMD2_reference_n"] = min(pred.shape[0], true.shape[0])
 
     return metrics
     # if weights is not None:
@@ -330,7 +490,9 @@ def distribution_distance_metrics(
     # mmd_poly = poly_mmd2(pred, true, d=2, alpha=1.0, c=2.0).item()
     # mmd_rbf = mix_rbf_mmd2(pred, true, sigma_list=[0.01, 0.1, 1, 10, 100]).item()
 
-    # mean_mse, mean_l2, mean_l1 = vector_distances(torch.mean(pred, dim=0), torch.mean(true, dim=0))
+    # mean_mse, mean_l2, mean_l1 = (
+    #     vector_distances(torch.mean(pred, dim=0), torch.mean(true, dim=0))
+    # )
     # median_mse, median_l2, median_l1 = vector_distances(
     #     torch.median(pred, dim=0)[0], torch.median(true, dim=0)[0]
     # )
@@ -381,7 +543,7 @@ def density_metrics(
         "eubo-elbo": eubo - elbo,
         "iw_elbo": iw_elbo,
         "Δ_elbo": (gt_log_Z - elbo) if gt_log_Z is not None else float("nan"),
-        "Δ_eubo": (gt_log_Z - eubo) if gt_log_Z is not None else float("nan"),
+        "Δ_eubo": (eubo - gt_log_Z) if gt_log_Z is not None else float("nan"),
         "Δ_iw_elbo": (gt_log_Z - iw_elbo) if gt_log_Z is not None else float("nan"),
         "ess(%)": ess / log_pfs.shape[0] * 100,
     }

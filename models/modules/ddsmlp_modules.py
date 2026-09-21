@@ -1,4 +1,5 @@
 from typing import Callable
+
 import torch
 from torch import nn
 
@@ -34,7 +35,7 @@ class DDSMLPModule(MLPModule):
             )
             if self.zero_init:
                 self.time_coder_grad[-1].weight.data.fill_(1e-8)
-                self.time_coder_grad[-1].bias.data.fill_(0.01)
+                self.time_coder_grad[-1].bias.data.fill_(0.1)
 
         self.state_time_net = nn.Sequential(
             nn.Linear(self.ndim + self.t_emb_dim, self.hidden_dim),
@@ -78,6 +79,9 @@ class DDSMLPModule(MLPModule):
                 ],
                 nn.Linear(self.flow_hidden_dim, 1),
             )
+            if self.zero_init:
+                self.flow_state_time_net[-1].weight.data.fill_(1e-8)
+                self.flow_state_time_net[-1].bias.data.fill_(0.0)
 
     def get_param_groups(self) -> ParamGroups:
         forward_params = []
@@ -135,8 +139,8 @@ class DDSMLPModule(MLPModule):
         if self.conditional_flow_model:
             assert self.flow_state_time_net is not None
             if not self.share_embeddings:
-                sin_embed_cond = (t * self.flow_pe + self.flow_timestep_phase).sin()  # type: ignore
-                cos_embed_cond = (t * self.flow_pe + self.flow_timestep_phase).cos()  # type: ignore
+                sin_embed_cond = (t.unsqueeze(1) * self.flow_pe + self.flow_timestep_phase).sin()  # type: ignore
+                cos_embed_cond = (t.unsqueeze(1) * self.flow_pe + self.flow_timestep_phase).cos()  # type: ignore
                 flow_time_array_emb = torch.cat([sin_embed_cond, cos_embed_cond], dim=-1)
                 flow_t_net1 = self.flow_time_coder_state(flow_time_array_emb)
                 if flow_t_net1.shape[0] == 1:

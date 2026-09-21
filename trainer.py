@@ -1,5 +1,5 @@
-from typing import Callable, Literal
 import warnings
+from typing import Callable, Literal
 
 import torch
 
@@ -11,6 +11,7 @@ from models import GFN
 from utils.eval_utils import density_metrics, distribution_distance_metrics
 from utils.misc_utils import linear_annealing, logmeanexp
 from utils.plot_utils import visualize
+from utils.train_utils import CompositeOptimizer, CompositeScheduler
 
 
 class Trainer:
@@ -18,12 +19,14 @@ class Trainer:
         self,
         energy: BaseEnergy,
         gfn_model: GFN,
-        optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler.MultiStepLR | None,
+        optimizer: CompositeOptimizer,
+        scheduler: CompositeScheduler | None,
         clip_grad_norm: float,
+        clip_logZ_grad_norm_ratio: float,
         loss_type: Literal["tb", "logvar", "db", "subtb", "tb-subtb", "rev_kl", "mle"],
+        logZ_huber_delta: float,
         subtb_lambda: float,
-        subtb_chunk_size: int,
+        subtb_n_chunks: int,
         n_epochs: int,
         bwd_to_fwd_ratio: float,
         buffer: TerminalStateBuffer | None,
@@ -33,7 +36,7 @@ class Trainer:
         smc_sampling_func: Callable[[torch.Tensor, int, bool], torch.Tensor],
         smc_resample_threshold: float,
         smc_target_ess: float,
-        smc_freq: int,
+        smc_every: int,
         mcmc: BaseMCMC | None,
         mcmc_freq: int,
         mcmc_batch_size: int,
@@ -53,12 +56,18 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.clip_grad_norm = clip_grad_norm
+        self.clip_logZ_grad_norm_ratio = clip_logZ_grad_norm_ratio
 
         # Loss
         self.loss_type = loss_type
-        self.subtb_chunk_size = subtb_chunk_size if self.loss_type in ["subtb", "tb-subtb"] else 1
+        self.subtb_chunk_size = (
+            gfn_model.num_steps // subtb_n_chunks
+            if self.loss_type in ["subtb", "tb-subtb"] and subtb_n_chunks > 0
+            else 1
+        )
         self.subtb_coef_matrix = None
-        if loss_type == "subtb" and subtb_chunk_size == 0:  # chunk-based subtb
+        self.logZ_huber_delta = logZ_huber_delta
+        if loss_type == "subtb" and subtb_n_chunks == 0:
             self.subtb_coef_matrix = cal_subtb_coef_matrix(
                 subtb_lambda, self.gfn_model.num_steps
             ).to(self.device)
@@ -82,7 +91,7 @@ class Trainer:
         self.smc_sampling_func = smc_sampling_func
         self.smc_resample_threshold = smc_resample_threshold
         self.smc_target_ess = smc_target_ess
-        self.smc_freq = smc_freq
+        self.smc_every = smc_every
         self.bwd_count = 0
 
         # MCMC
@@ -187,8 +196,12 @@ class Trainer:
             raise ValueError("Loss is NaN")
 
         loss.backward()
-        if self.clip_grad_norm > 0.0:
-            torch.nn.utils.clip_grad_norm_(self.gfn_model.parameters(), self.clip_grad_norm)
+        if self.clip_grad_norm > 0.0 or self.clip_logZ_grad_norm_ratio > 0.0:
+            logZ_abs = abs(self.gfn_model.pred_module.log_Z.item())
+            clip_logZ_grad_norm = (
+                self.clip_logZ_grad_norm_ratio * logZ_abs if logZ_abs > 0.0 else 0.0
+            )
+            self.optimizer.clip_grad_norm_(self.clip_grad_norm, clip_logZ_grad_norm)
         self.optimizer.step()
         if self.scheduler is not None:
             self.scheduler.step()
@@ -213,6 +226,7 @@ class Trainer:
             invtemp=self.get_invtemp(it),
             subtb_coef_matrix=self.subtb_coef_matrix,
             subtb_chunk_size=self.subtb_chunk_size,
+            logZ_huber_delta=self.logZ_huber_delta,
             ndim=self.energy.ndim,
         )
 
@@ -242,7 +256,7 @@ class Trainer:
             assert self.subtb_chunk_size > 0
 
             # SMC sampling and adding to buffer if smc is True
-            if self.smc and self.bwd_count % self.smc_freq == 0:
+            if self.smc and self.bwd_count % self.smc_every == 0:
                 xs, log_iws, log_rs = self.gfn_model.get_trajectory_fwd_smc(
                     self.batch_size,
                     self.subtb_chunk_size,
@@ -272,6 +286,7 @@ class Trainer:
                 invtemp=self.get_invtemp(it),
                 subtb_coef_matrix=self.subtb_coef_matrix,
                 subtb_chunk_size=self.subtb_chunk_size,
+                logZ_huber_delta=self.logZ_huber_delta,
                 ndim=self.energy.ndim,
             )
 
@@ -428,6 +443,24 @@ class Trainer:
             metrics = {k.replace("eval", "final_eval"): v for k, v in metrics.items()}
 
         return metrics, model_trajs, buffer_xs
+
+    @torch.no_grad()
+    def sample_terminal(self, n: int) -> torch.Tensor:
+        """Draw ``n`` terminal states in eval-sized batches, keeping only x_T on the CPU.
+
+        ``eval_step`` concatenates whole trajectories, which is (n, T+1, ndim) and reaches
+        several GB for the high-dimensional targets; this keeps only what is worth saving.
+        """
+        self.gfn_model.eval()
+        chunks, drawn = [], 0
+        while drawn < n:
+            bsz = min(self.eval_batch_size, n - drawn)
+            trajs, *_ = self.gfn_model.get_trajectory_fwd(
+                bsz, detach=True, subtraj_len=self.subtb_chunk_size
+            )
+            chunks.append(trajs[:, -1].detach().cpu())
+            drawn += bsz
+        return torch.cat(chunks, dim=0)[:n]
 
     @torch.no_grad()
     def plot_step(

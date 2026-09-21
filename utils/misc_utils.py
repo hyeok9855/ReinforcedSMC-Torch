@@ -1,10 +1,34 @@
 import argparse
 import contextlib
 import math
+import os
 import random
 
 import numpy as np
 import torch
+
+
+def maybe_compile(fn=None, **kwargs):
+    """Conditionally compile a function with torch.compile.
+
+    By default, compilation is disabled. To enable, set environment variable:
+        TORCH_COMPILE=1
+
+    Args:
+        fn: Function to optionally compile.
+        **kwargs: Arguments to pass to torch.compile (e.g., dynamic=True).
+
+    Returns:
+        Compiled function if enabled, otherwise the original function.
+    """
+    _enable_compile = os.getenv("TORCH_COMPILE", "0") == "1"
+
+    def _compile(func):
+        return torch.compile(func, **kwargs) if _enable_compile else func
+
+    if fn is None:
+        return _compile
+    return _compile(fn)
 
 
 def set_seed(seed):
@@ -96,6 +120,8 @@ def get_name(args: argparse.Namespace) -> str:
         name += f"-lrflow{args.lr_flow}"
         if args.learn_beta:
             name += f"-lrbeta{args.lr_beta}"
+    if getattr(args, "logZ_huber_delta", 0.0) > 0.0:  # train_ls.py has no such arg
+        name += f"-hubZ{args.logZ_huber_delta}"
     if args.learn_pb:
         name += f"-lrbwd{args.lr_bwd}"
     if args.use_weight_decay:
@@ -121,7 +147,7 @@ def get_name(args: argparse.Namespace) -> str:
             name += f"-tgtess{args.buffer_target_ess}"
 
         if args.smc:
-            name += f"_smc-freq{args.smc_freq}"
+            name += f"_smc-every{args.smc_every}"
             name += f"-thres{args.smc_resample_threshold}-tgtess{args.smc_target_ess}"
 
         if args.mcmc_type != "none":
@@ -133,3 +159,30 @@ def get_name(args: argparse.Namespace) -> str:
     name += f"_{args.exp_name}" if args.exp_name else ""
 
     return name
+
+
+def save_run_artifacts(
+    save_dir: str,
+    run_name: str,
+    args: argparse.Namespace,
+    gfn_model: torch.nn.Module,
+    samples: torch.Tensor,
+    metrics: dict,
+) -> str:
+    """Persist the trained model and its final samples so a run can be re-scored later.
+
+    Writes ``<save_dir>/<run_name>/{final_model.pt,final_samples.npy}``. The checkpoint holds
+    weights only (no optimiser state), which is all that is needed to re-sample or re-evaluate.
+    """
+    out = os.path.join(save_dir, run_name)
+    os.makedirs(out, exist_ok=True)
+    torch.save(
+        {
+            "model_state_dict": gfn_model.state_dict(),
+            "args": vars(args),
+            "final_metrics": metrics,
+        },
+        os.path.join(out, "final_model.pt"),
+    )
+    np.save(os.path.join(out, "final_samples.npy"), samples.cpu().numpy().astype(np.float32))
+    return out

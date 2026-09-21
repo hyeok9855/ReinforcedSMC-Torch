@@ -7,7 +7,7 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
     "einops>=0.6.0",
     "numpy<2",
-    "ott-jax>=0.6.0",
+    "ott-jax>=0.6.0,<0.7.0",
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
     "tqdm>=4.66.1",
@@ -68,5 +68,10 @@ torch = [
     { index = "pytorch-cpu", group = "cpu" },
 ]
 
-[tool.black]
+[tool.ruff]
 line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# Enable Pyflakes (F), Error (E), and Isort (I)
+select = ["F", "E", "I"]

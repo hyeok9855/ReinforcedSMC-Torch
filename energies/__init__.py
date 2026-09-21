@@ -2,18 +2,36 @@ import argparse
 
 import torch
 
-from .base import BaseEnergy
-
 from .aldp import ALDP
+from .base import BaseEnergy
 from .funnel import Funnel
 from .gmm40 import GMM40
+from .intermediate_energy import IntermediateEnergy
 from .lennard_jones import LJ13, LJ55, LennardJones
 from .lgcp import LGCP
 from .manywell import ManyWell
+from .nice import NICE, NICEMNIST, NICEFashionMNIST
 from .student_t_mixture import StudentTMixture
 from .twenty_five_gmm import TwentyFiveGaussianMixture
 
-from .intermediate_energy import IntermediateEnergy
+__all__ = [
+    "BaseEnergy",
+    "ALDP",
+    "Funnel",
+    "GMM40",
+    "LJ13",
+    "LJ55",
+    "LennardJones",
+    "LGCP",
+    "ManyWell",
+    "NICE",
+    "NICEFashionMNIST",
+    "NICEMNIST",
+    "StudentTMixture",
+    "TwentyFiveGaussianMixture",
+    "IntermediateEnergy",
+    "get_energy",
+]
 
 
 def get_energy(
@@ -37,6 +55,10 @@ def get_energy(
         energy = Funnel(device=device, ndim=ndim, seed=seed)
     elif energy_name == "manywell":
         energy = ManyWell(device=device, ndim=ndim, seed=seed)
+    elif energy_name == "nice_mnist":
+        energy = NICEMNIST(device=device, seed=seed)
+    elif energy_name == "nice_fashion_mnist":
+        energy = NICEFashionMNIST(device=device, seed=seed)
     elif energy_name == "lgcp":
         energy = LGCP(device=device, seed=seed)
     elif energy_name == "lj13":

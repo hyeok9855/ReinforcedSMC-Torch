@@ -152,7 +152,7 @@ class BaseModule(nn.Module, ABC):
 
         if self.lp:
             assert s is not None and t is not None and grad_logr_fn is not None
-            mean += self.get_lp(s=s, t=t, grad_logr_fn=grad_logr_fn, **kwargs)
+            mean = mean + self.get_lp(s=s, t=t, grad_logr_fn=grad_logr_fn, **kwargs)
 
         return mean, logvar
 
@@ -164,13 +164,10 @@ class BaseModule(nn.Module, ABC):
         **kwargs,
     ) -> torch.Tensor:
         assert self.lp
-        scale = self.get_lp_scaling(t=t, **kwargs)
-        lp = scale * grad_logr_fn(s)
-
-        lp = torch.nan_to_num(lp)
+        grad_logr = torch.nan_to_num(grad_logr_fn(s))
         if self.clipping:
-            lp = torch.clip(lp, -self.lgv_clip, self.lgv_clip)
-        return lp
+            grad_logr = torch.clip(grad_logr, -self.lgv_clip, self.lgv_clip)
+        return self.get_lp_scaling(t=t, **kwargs) * grad_logr
 
     def get_lp_scaling(self, t: torch.Tensor, **kwargs) -> torch.Tensor:
         raise NotImplementedError

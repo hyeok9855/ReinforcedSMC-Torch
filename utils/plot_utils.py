@@ -4,9 +4,9 @@ import warnings
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
-import wandb
 from PIL import Image as PILImage
 
+import wandb
 from energies import BaseEnergy
 from utils.particle_system import interatomic_distance
 

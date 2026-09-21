@@ -6,7 +6,8 @@ import torch.nn as nn
 
 from energies import BaseEnergy
 from models.modules import BaseModule
-from utils.train_utils import ess, binary_search_smoothing
+from utils.misc_utils import maybe_compile
+from utils.train_utils import binary_search_smoothing, ess
 
 logtwopi = math.log(2 * math.pi)
 
@@ -42,6 +43,7 @@ class GFN(nn.Module):
         self.device = device
         self.num_steps = num_steps
         self.dt = torch.tensor(1.0 / num_steps, device=self.device)
+        self.times = torch.arange(num_steps + 1, device=self.device) * self.dt
 
         self.reference_process = reference_process
         self.t_scale = self.init_std = self.noise_scale = None
@@ -66,7 +68,7 @@ class GFN(nn.Module):
                 sample_shape=torch.Size((bsz,))
             )
             self.initial_logprob = lambda s: self.initial_dist.log_prob(s).sum(-1)
-            alphas = cos_sq_fn_step_scheme(num_steps, noise_scale=noise_scale)
+            alphas = cos_sq_fn_step_scheme(num_steps, noise_scale=noise_scale).to(self.device)
             self.alpha_fn = lambda step: alphas[step]
             self.lambda_fn = lambda step: alphas[step]
         else:
@@ -144,6 +146,7 @@ class GFN(nn.Module):
             log_pbs = -0.5 * (logtwopi + 2 * bwd_std.log() + noise**2).sum(1)
         return s, log_pbs
 
+    @maybe_compile
     def get_partial_energy(
         self,
         states: torch.Tensor,  # (bsz, T', ndim)
@@ -176,6 +179,37 @@ class GFN(nn.Module):
         ).view(bsz, -1).detach()
         return partial_energy  # (bsz, T')
 
+    @maybe_compile
+    def traj_step_fwd(
+        self,
+        s: torch.Tensor,  # state at time t
+        t: torch.Tensor,  # (bsz,) time t
+        step: int,  # step at time t
+        detach: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        pf_mean, pf_logvar, flow = self.pred_module.forward(s, t, self.energy.grad_log_reward)
+        s_next, log_pf = self.forward_step(s, None, step, pf_mean, pf_logvar, detach=detach)
+
+        t_next = t + self.dt
+        mean_correction, var_correction = self.pred_module.backward(s_next, t_next)
+        _, log_pb = self.backward_step(s, s_next, step, mean_correction, var_correction)
+        return s_next, log_pf, log_pb, flow
+
+    @maybe_compile
+    def traj_step_bwd(
+        self,
+        s_next: torch.Tensor,  # state at time t + \Delta t
+        t_next: torch.Tensor,  # (bsz,) time t + \Delta t
+        step: int,  # step at time t
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        mean_correction, var_correction = self.pred_module.backward(s_next, t_next)
+        s, log_pb = self.backward_step(None, s_next, step, mean_correction, var_correction)
+
+        t = t_next - self.dt
+        pf_mean, pf_logvar, flow = self.pred_module.forward(s, t, self.energy.grad_log_reward)
+        _, log_pf = self.forward_step(s, s_next, step, pf_mean, pf_logvar, detach=True)
+        return s, log_pf, log_pb, flow
+
     def get_trajectory_fwd(
         self,
         batch_size: int,
@@ -195,17 +229,12 @@ class GFN(nn.Module):
         for i in range(self.num_steps):  # from step 0 to self.num_steps - 1
             s = s.detach() if detach else s
 
-            t = torch.tensor([i * self.dt], device=self.device).repeat(bsz)
-            pf_mean, pf_logvar, flow = self.pred_module.forward(s, t, self.energy.grad_log_reward)
+            s_, log_pf, log_pb, flow = self.traj_step_fwd(s, self.times[i].expand(bsz), i, detach)
 
             if self.pred_module.conditional_flow_model and i > 0 and i % subtraj_len == 0:
                 log_fs[:, i] = flow  # for i == 0, we use log Z + init_log_probs
-
-            s_, log_pfs[:, i] = self.forward_step(s, None, i, pf_mean, pf_logvar, detach=detach)
-
-            t_next = t + self.dt
-            mean_correction, var_correction = self.pred_module.backward(s_, t_next)
-            _, log_pbs[:, i] = self.backward_step(s, s_, i, mean_correction, var_correction)
+            log_pfs[:, i] = log_pf
+            log_pbs[:, i] = log_pb
 
             s = s_
             states[:, i + 1] = s
@@ -240,17 +269,12 @@ class GFN(nn.Module):
         for i in range(self.num_steps - 1, -1, -1):  # from step T - 1 to 0
             s = s.detach()
 
-            t_next = torch.tensor([(i + 1) * self.dt], device=self.device).repeat(bsz)
-            mean_correction, var_correction = self.pred_module.backward(s, t_next)
-            s_, log_pbs[:, i] = self.backward_step(None, s, i, mean_correction, var_correction)
-
-            t = t_next - self.dt
-            pf_mean, pf_logvar, flow = self.pred_module.forward(s_, t, self.energy.grad_log_reward)
+            s_, log_pf, log_pb, flow = self.traj_step_bwd(s, self.times[i + 1].expand(bsz), i)
 
             if self.pred_module.conditional_flow_model and i > 0 and i % subtraj_len == 0:
                 log_fs[:, i] = flow  # for i == 0, we use log Z + init_log_probs
-
-            _, log_pfs[:, i] = self.forward_step(s_, s, i, pf_mean, pf_logvar, detach=True)
+            log_pfs[:, i] = log_pf
+            log_pbs[:, i] = log_pb
 
             s = s_
             states[:, i] = s
@@ -265,6 +289,7 @@ class GFN(nn.Module):
 
         return states, log_pfs, log_pbs, log_fs, init_log_probs
 
+    @torch.no_grad()
     def get_trajectory_fwd_smc(
         self,
         batch_size: int,
@@ -280,7 +305,8 @@ class GFN(nn.Module):
         Args:
             batch_size (int): The number of particles (trajectories) to sample.
             subtraj_len (int): The number of steps in each SMC segment.
-            sampling_func (Callable[[torch.Tensor, int, bool], torch.Tensor]): The sampling function to use for resampling.
+            sampling_func (Callable[[torch.Tensor, int, bool], torch.Tensor]): The sampling
+            function to use for resampling.
             resample_threshold (float): The normalized ESS threshold to trigger resampling.
             target_ess (float): The target ESS.
         Returns:
@@ -325,18 +351,12 @@ class GFN(nn.Module):
                 step = start_step + j
                 subtraj_states[i, :, j, :] = s
 
-                t = torch.tensor([step * self.dt], device=self.device).repeat(bsz)
-                pf_mean, pf_logvar, flow = self.pred_module.forward(
-                    s, t, self.energy.grad_log_reward
+                s_next, log_pfs, log_pbs, flow = self.traj_step_fwd(
+                    s, self.times[step].expand(bsz), step, True
                 )
 
                 if j > 0:
                     subtraj_log_fs[i, :, j] = flow
-
-                s_next, log_pfs = self.forward_step(s, None, step, pf_mean, pf_logvar, detach=True)
-                t_next = t + self.dt
-                mean_correction, var_correction = self.pred_module.backward(s_next, t_next)
-                _, log_pbs = self.backward_step(s, s_next, step, mean_correction, var_correction)
 
                 subtraj_log_pfs[i, :, j] = log_pfs
                 subtraj_log_pbs[i, :, j] = log_pbs
@@ -346,7 +366,7 @@ class GFN(nn.Module):
             if end_step == self.num_steps:
                 next_log_f = self.energy.log_reward(s)
             else:
-                t = torch.tensor([end_step * self.dt], device=self.device).repeat(bsz)
+                t = self.times[end_step].expand(bsz)
                 _, _, next_log_f = self.pred_module.forward(s, t, self.energy.grad_log_reward)
                 if self.partial_energy:
                     next_log_f += self.get_partial_energy(

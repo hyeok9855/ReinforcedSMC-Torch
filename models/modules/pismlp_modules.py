@@ -6,9 +6,9 @@ from models.modules.mlp_modules import MLPModule
 
 class PISMLPModule(MLPModule):
     def initialize(self):
-        assert (
-            self.s_emb_dim == self.t_emb_dim
-        ), "Dimensionality of state embedding and time embedding should be the same!"
+        assert self.s_emb_dim == self.t_emb_dim, (
+            "Dimensionality of state embedding and time embedding should be the same!"
+        )
 
         self.t_model = TimeEncodingPIS(self.harmonics_dim, self.t_emb_dim, self.hidden_dim)
         self.s_model = StateEncodingPIS(self.ndim, self.s_emb_dim)
@@ -173,7 +173,7 @@ class LangevinScalingModelPIS(nn.Module):
 
         if zero_init:
             self.lgv_model[-1].weight.data.fill_(1e-8)
-            self.lgv_model[-1].bias.data.fill_(0.01)
+            self.lgv_model[-1].bias.data.fill_(0.1)
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         t_sin = ((t.unsqueeze(1) * self.pe) + self.timestep_phase).sin()  # type: ignore

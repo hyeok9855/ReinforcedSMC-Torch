@@ -10,13 +10,13 @@ COMMON_ARGS="$COMMON_ARGS --reference_process ou --init_std 1.0 --t_scale 1.0 --
 COMMON_ARGS="$COMMON_ARGS --lr_fwd 0.0005 --lr_flow 0.0005 --lr_logZ 0.05 --lr_beta 0.05 --use_scheduler --milestones 0.8 --gamma 0.1"
 COMMON_ARGS="$COMMON_ARGS --exp_name aldp"
 
-BUFFER_ARGS="--use_buffer --buffer_size 400000 --bwd_to_fwd_ratio 3.0 --prefill_epochs 100"
+BUFFER_ARGS="--use_buffer --buffer_size 400000 --bwd_to_fwd_ratio 2.0 --prefill_epochs 100"
 IWBUFFER_ARGS="$BUFFER_ARGS --prioritization iw --buffer_target_ess 0.05 --buffer_sampling systematic"
 MCMC_ARGS="--mcmc_type md --mcmc_freq 100 --mcmc_n_steps 500 --mcmc_batch_size 200 --mcmc_burn_in 0 --mcmc_step_size 0.001 --mcmc_gamma 2.5 --mcmc_thinning 50"
-SMC_ARGS="--smc --epochs 10000 --smc_target_ess 0.05 --smc_resample_threshold 0.2 --smc_sampling systematic"
+SMC_ARGS="--smc --epochs 10000 --smc_target_ess 0.05 --smc_resample_threshold 0.2 --smc_sampling systematic --smc_every 2"
 
 if [ "$ALG" = "pis" ]; then  # Path Integral Sampler with reverse-KL loss
-    ARGS="$COMMON_ARGS --loss_type pis"
+    ARGS="$COMMON_ARGS --loss_type rev_kl"
 elif [ "$ALG" = "tb" ]; then  # On-policy training with Trajectory Balance (TB) loss
     ARGS="$COMMON_ARGS --loss_type tb"
 elif [ "$ALG" = "tb_buf" ]; then  # TB with unweighted buffer
@@ -28,13 +28,13 @@ elif [ "$ALG" = "tb_buf_mcmc" ]; then  # TB with unweighted buffer and MCMC buff
 elif [ "$ALG" = "tb_iwbuf_mcmc" ]; then  # TB with importance-weighted buffer and MCMC buffer augmentation
     ARGS="$COMMON_ARGS --loss_type tb $IWBUFFER_ARGS $MCMC_ARGS"
 elif [ "$ALG" = "tb-subtb_buf_smc" ]; then  # TB/SubTB combined loss with unweighted buffer and SMC
-    ARGS="$COMMON_ARGS --loss_type tb-subtb --subtb_chunk_size 32 $BUFFER_ARGS $SMC_ARGS"
+    ARGS="$COMMON_ARGS --loss_type tb-subtb $BUFFER_ARGS $SMC_ARGS"
 elif [ "$ALG" = "tb-subtb_iwbuf_smc" ]; then  # TB/SubTB combined loss with importance-weighted buffer and SMC
-    ARGS="$COMMON_ARGS --loss_type tb-subtb --subtb_chunk_size 32 $IWBUFFER_ARGS $SMC_ARGS"
+    ARGS="$COMMON_ARGS --loss_type tb-subtb $IWBUFFER_ARGS $SMC_ARGS"
 elif [ "$ALG" = "tb-subtb_buf_smc_mcmc" ]; then  # TB/SubTB combined loss with unweighted buffer, SMC, and MCMC buffer augmentation
-    ARGS="$COMMON_ARGS --loss_type tb-subtb --subtb_chunk_size 32 $BUFFER_ARGS $SMC_ARGS $MCMC_ARGS"
+    ARGS="$COMMON_ARGS --loss_type tb-subtb $BUFFER_ARGS $SMC_ARGS $MCMC_ARGS"
 elif [ "$ALG" = "tb-subtb_iwbuf_smc_mcmc" ]; then  # TB/SubTB combined loss with importance-weighted buffer, SMC, and MCMC buffer augmentation
-    ARGS="$COMMON_ARGS --loss_type tb-subtb --subtb_chunk_size 32 $BUFFER_ARGS $SMC_ARGS $MCMC_ARGS --smc_freq 2"  # set smc_freq to 2 to make NFE comparable
+    ARGS="$COMMON_ARGS --loss_type tb-subtb $IWBUFFER_ARGS $SMC_ARGS $MCMC_ARGS"
 else  # Invalid algorithm
     echo "Invalid algorithm: $ALG"
     exit 1

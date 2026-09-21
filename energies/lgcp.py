@@ -99,10 +99,9 @@ class Cox:
         # torch
         self._bin_vals = torch.from_numpy(get_bin_vals(num_bins_per_dim)).to(self.device).float()
 
-        short_kernel_func = lambda x, y: th_batch_kernel_fn(
-            x, y, self._signal_variance, num_bins_per_dim, self._beta
+        self._gram_matrix = th_batch_kernel_fn(
+            self._bin_vals, self._bin_vals, self._signal_variance, num_bins_per_dim, self._beta
         )
-        self._gram_matrix = short_kernel_func(self._bin_vals, self._bin_vals)
         self._cholesky_gram = torch.linalg.cholesky(self._gram_matrix)
         self._white_gaussian_log_normalizer = (
             -0.5 * self._num_latents * np.log(2.0 * np.pi)
@@ -148,9 +147,7 @@ class LGCP(BaseEnergy):
         self.cox = Cox(_CSV_PATH, 40, use_whitened=False, device=device)
         super().__init__(device=device, ndim=_LGCP_DIM, seed=seed)
         self.device = device
-        self.data = torch.ones(_LGCP_DIM, dtype=float).to(
-            self.device
-        )  # pylint: disable= not-callable
+        self.data = torch.ones(_LGCP_DIM, dtype=float).to(self.device)  # pylint: disable= not-callable
         self.data_ndim = _LGCP_DIM
 
     # TODO - check!

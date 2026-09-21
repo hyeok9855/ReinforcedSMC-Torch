@@ -1,5 +1,5 @@
-import typing
 import math
+import typing
 import warnings
 from pathlib import Path
 
@@ -8,14 +8,13 @@ import matplotlib.pyplot as plt
 import mdtraj as md
 import numpy as np
 import torch
-import wandb
 from matplotlib.colors import LogNorm
 from openmmtools import testsystems
 
+import wandb
 from energies.base import BaseEnergy
 from utils.misc_utils import temp_seed
-from utils.plot_utils import fig_to_image, viz_interatomic_dist_hist, viz_energy_hist
-
+from utils.plot_utils import fig_to_image, viz_energy_hist, viz_interatomic_dist_hist
 
 DATA_PATH = Path(__file__).parent / "data" / "aldp"
 PI_PLUS_EPS = math.pi + 0.0001
@@ -162,12 +161,14 @@ class ALDP(BaseEnergy):
         return energy
 
     def get_lform_indices(self, x: torch.Tensor) -> torch.Tensor:
+        x_fab, _ = self.scale_ind_circ(x)
+
         # Compute the dihedral angle difference
         diff_ = torch.column_stack(
             (
-                x[:, self.chirality_ind[0]] - x[:, self.chirality_ind[1]],
-                x[:, self.chirality_ind[0]] - x[:, self.chirality_ind[1]] + 2 * np.pi,
-                x[:, self.chirality_ind[0]] - x[:, self.chirality_ind[1]] - 2 * np.pi,
+                x_fab[:, self.chirality_ind[0]] - x_fab[:, self.chirality_ind[1]],
+                x_fab[:, self.chirality_ind[0]] - x_fab[:, self.chirality_ind[1]] + 2 * np.pi,
+                x_fab[:, self.chirality_ind[0]] - x_fab[:, self.chirality_ind[1]] - 2 * np.pi,
             )
         )
 

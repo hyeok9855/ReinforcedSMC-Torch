@@ -52,7 +52,7 @@ bash scripts/aldp.sh <ALG> <SEED>
 An example usage with gmm40 (5d) energy
 
 ```bash
-python --energy_name gmm40 --ndim 5 --reference_process ou --init_std 20.0 --num_steps 64 --loss_type tb-subtb --prioritization iw --buffer_target_ess 0.05 --smc --smc_target_ess 0.05 --epochs 20000 --seed 0
+python --energy_name gmm40 --ndim 5 --reference_process ou --init_std 20.0 --num_steps 64 --loss_type tb-subtb --use_buffer --prioritization iw --buffer_target_ess 0.05 --smc --smc_target_ess 0.05 --epochs 20000 --seed 0
 ```
 
 For different energies, you might need to change the `init_std` accordingly so that the reference process reasonably covers the target space that you want to sample from.

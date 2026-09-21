@@ -1,10 +1,14 @@
 import abc
+import warnings
 
 import torch
 
 
 class BaseEnergy(abc.ABC):
     is_particle_system = False
+    # Flipped off for energies whose `energy` cannot be differentiated by functorch (e.g. ALDP,
+    # whose boltzgen/OpenMM bridge is a legacy autograd.Function).
+    _func_grad_ok: bool = True
 
     def __init__(
         self,
@@ -29,14 +33,23 @@ class BaseEnergy(abc.ABC):
         return log_r
 
     def grad_log_reward(self, x: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            copy_x = x.detach().clone()
-            copy_x.requires_grad = True
-            with torch.enable_grad():
-                self.log_reward(copy_x).sum().backward()
-                lgv = copy_x.grad
-                assert lgv is not None
-        return lgv.data
+        if self._func_grad_ok:
+            try:
+                lgv = torch.func.grad(lambda state: self.log_reward(state).sum())(x.detach())
+                return lgv.detach()
+            except RuntimeError as e:
+                if "setup_context" not in str(e):
+                    raise
+                self._func_grad_ok = False
+                warnings.warn(
+                    f"{type(self).__name__}.energy uses an autograd.Function that functorch "
+                    "cannot transform; falling back to autograd for grad_log_reward."
+                )
+
+        with torch.enable_grad():  # `get_lp` runs under no_grad during eval
+            copy_x = x.detach().clone().requires_grad_(True)
+            (lgv,) = torch.autograd.grad(self.log_reward(copy_x).sum(), copy_x)
+        return lgv.detach()
 
     def sample(self, batch_size: int, seed: int | None = None) -> torch.Tensor:
         raise NotImplementedError
