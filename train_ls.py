@@ -228,7 +228,12 @@ def train(args: argparse.Namespace) -> None:
     if args.save_dir:
         samples = trainer.sample_terminal(args.final_eval_data_size)
         out = save_run_artifacts(
-            args.save_dir, f"{exp_name}_seed{args.seed}", args, gfn_model, samples, final_metrics
+            args.save_dir,
+            f"{args.energy_name}-d{args.ndim}_{exp_name}_seed{args.seed}",
+            args,
+            gfn_model,
+            samples,
+            final_metrics,
         )
         print(f"Saved final model and {len(samples)} samples to {out}")
 
@@ -383,8 +388,6 @@ if __name__ == "__main__":
 
     ################################################################
     # Eval & Plot
-    # Empty (the default) saves nothing. Otherwise writes the trained weights and the
-    # final samples to <save_dir>/<run_name>_seed<seed>/ for later re-evaluation.
     parser.add_argument("--save_dir", type=str, default="")
     parser.add_argument("--disable_wandb", action="store_true", default=False)
     parser.add_argument("--eval_freq", type=int, default=100)
